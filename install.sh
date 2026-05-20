@@ -47,7 +47,7 @@ else
   cat > "$CONFIG_PATH" <<JSON
 {
   "base_url": "https://validatorsclock.xyz",
-  "interval_secs": 60,
+  "interval_secs": 300,
   "full_geo_refresh_secs": 3600,
   "state": "$ROOT/out/runtime/everscale_nodes_state.json",
   "output": "$MAP_DIR/everscale_full.json",

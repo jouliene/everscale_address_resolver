@@ -923,7 +923,7 @@ fn default_base_url() -> String {
 }
 
 fn default_interval_secs() -> u64 {
-    60
+    300
 }
 
 fn default_full_geo_refresh_secs() -> u64 {
