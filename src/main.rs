@@ -353,9 +353,14 @@ async fn run(args: RunArgs) -> Result<()> {
     let config = load_config(&args.config)?;
     let base_dir = config_base_dir(&args.config);
     let config = config.resolve_paths(&base_dir);
+    let resolver = EverDhtResolver::new(
+        &config.resolver.global_config_path,
+        Duration::from_secs(config.resolver.lookup_timeout_secs),
+    )
+    .await?;
 
     loop {
-        if let Err(error) = collect_once(&config).await {
+        if let Err(error) = collect_once(&config, &resolver).await {
             eprintln!("collect error: {error:#}");
             if args.once {
                 return Err(error);
@@ -370,7 +375,7 @@ async fn run(args: RunArgs) -> Result<()> {
     }
 }
 
-async fn collect_once(config: &AppConfig) -> Result<()> {
+async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<()> {
     let now = unix_now();
     let source_url = format!("{}/api/chains/{CHAIN_ID}/clock", config.base_url);
     eprintln!("collect start chain={CHAIN_ID} resolver=ever-dht");
@@ -387,12 +392,6 @@ async fn collect_once(config: &AppConfig) -> Result<()> {
     if clock.chain.id != CHAIN_ID {
         bail!("expected chain id {CHAIN_ID}, got {}", clock.chain.id);
     }
-
-    let resolver = EverDhtResolver::new(
-        &config.resolver.global_config_path,
-        Duration::from_secs(config.resolver.lookup_timeout_secs),
-    )
-    .await?;
 
     let mut validators = Vec::with_capacity(clock.current_set.validators.len());
     let mut resolved_total = 0usize;
