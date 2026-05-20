@@ -57,7 +57,8 @@ else
   "compact": true,
   "resolver": {
     "global_config_path": "$BOOTSTRAP_CONFIG",
-    "lookup_timeout_secs": 30
+    "lookup_timeout_secs": 30,
+    "workers": 16
   },
   "geo": {
     "endpoint": "http://ip-api.com/batch?fields=status,message,country,countryCode,regionName,city,lat,lon,isp,org,as,query",

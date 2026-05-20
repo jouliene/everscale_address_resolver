@@ -14,6 +14,7 @@ use adnl::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use ever_block::{Ed25519KeyOption, KeyId, KeyOption, UInt256, base64_decode};
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use ton_api::{
@@ -74,6 +75,8 @@ struct ResolverConfig {
     global_config_path: PathBuf,
     #[serde(default = "default_lookup_timeout_secs")]
     lookup_timeout_secs: u64,
+    #[serde(default = "default_workers")]
+    workers: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -393,45 +396,58 @@ async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<
         bail!("expected chain id {CHAIN_ID}, got {}", clock.chain.id);
     }
 
-    let mut validators = Vec::with_capacity(clock.current_set.validators.len());
-    let mut resolved_total = 0usize;
-    let mut validators_with_adnl = 0usize;
-
-    for validator in &clock.current_set.validators {
-        let resolution = match validator.adnl_addr.as_deref() {
-            Some(adnl_addr) => {
-                validators_with_adnl += 1;
-                if !is_hex_32(adnl_addr) {
-                    Resolution::invalid_adnl(adnl_addr)
-                } else {
-                    resolver.resolve(adnl_addr).await
+    let workers = config.resolver.workers.max(1);
+    let mut validators = stream::iter(clock.current_set.validators.iter().enumerate())
+        .map(|(index, validator)| async move {
+            let resolution = match validator.adnl_addr.as_deref() {
+                Some(adnl_addr) => {
+                    if !is_hex_32(adnl_addr) {
+                        Resolution::invalid_adnl(adnl_addr)
+                    } else {
+                        resolver.resolve(adnl_addr).await
+                    }
                 }
-            }
-            None => Resolution::missing_adnl(),
-        };
+                None => Resolution::missing_adnl(),
+            };
 
-        if resolution.is_resolved() {
-            resolved_total += 1;
-        }
+            (
+                index,
+                FullValidator {
+                    validator_public_key: validator.public_key.clone(),
+                    adnl_addr: validator.adnl_addr.clone(),
+                    wallet: validator.wallet.clone(),
+                    source_address: validator
+                        .source
+                        .as_ref()
+                        .map(|source| source.address.clone()),
+                    source_contract_type_hash: validator
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.contract_type_hash.clone()),
+                    contract_type: validator.contract_type.clone(),
+                    stake: validator.stake.clone(),
+                    weight: validator.weight.clone(),
+                    resolution,
+                },
+            )
+        })
+        .buffer_unordered(workers)
+        .collect::<Vec<_>>()
+        .await;
+    validators.sort_by_key(|(index, _)| *index);
+    let validators: Vec<FullValidator> = validators
+        .into_iter()
+        .map(|(_, validator)| validator)
+        .collect();
 
-        validators.push(FullValidator {
-            validator_public_key: validator.public_key.clone(),
-            adnl_addr: validator.adnl_addr.clone(),
-            wallet: validator.wallet.clone(),
-            source_address: validator
-                .source
-                .as_ref()
-                .map(|source| source.address.clone()),
-            source_contract_type_hash: validator
-                .source
-                .as_ref()
-                .and_then(|source| source.contract_type_hash.clone()),
-            contract_type: validator.contract_type.clone(),
-            stake: validator.stake.clone(),
-            weight: validator.weight.clone(),
-            resolution,
-        });
-    }
+    let validators_with_adnl = validators
+        .iter()
+        .filter(|validator| validator.adnl_addr.is_some())
+        .count();
+    let resolved_total = validators
+        .iter()
+        .filter(|validator| validator.resolution.is_resolved())
+        .count();
 
     let mut state = read_json_or_default::<RuntimeState>(&config.state)?;
     let full_geo_refresh =
@@ -916,6 +932,10 @@ fn default_full_geo_refresh_secs() -> u64 {
 
 fn default_lookup_timeout_secs() -> u64 {
     30
+}
+
+fn default_workers() -> usize {
+    16
 }
 
 fn default_map_stale_after_secs() -> u64 {
