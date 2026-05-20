@@ -43,3 +43,17 @@ Recommended production paths:
 /home/admin/.validators_clock/everscale_map/everscale_nodes.json
 /home/admin/.validators_clock/everscale_map/everscale_full.json
 ```
+
+## Install And Update
+
+Install after clone:
+
+```bash
+./install.sh
+```
+
+Update an existing checkout and restart the user service:
+
+```bash
+./update.sh
+```
