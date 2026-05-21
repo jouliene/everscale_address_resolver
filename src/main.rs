@@ -26,8 +26,6 @@ use ton_api::{
     },
 };
 
-const CHAIN_ID: &str = "everscale";
-const LOCAL_ADNL_ADDR: &str = "0.0.0.0:4191";
 const DHT_KEY_TAG: usize = 1;
 
 #[derive(Parser)]
@@ -54,6 +52,8 @@ struct RunArgs {
 struct AppConfig {
     #[serde(default = "default_base_url")]
     base_url: String,
+    #[serde(default = "default_chain")]
+    chain: String,
     #[serde(default = "default_interval_secs")]
     interval_secs: u64,
     #[serde(default = "default_full_geo_refresh_secs")]
@@ -73,6 +73,8 @@ struct AppConfig {
 #[derive(Clone, Debug, Deserialize)]
 struct ResolverConfig {
     global_config_path: PathBuf,
+    #[serde(default = "default_local_adnl_addr")]
+    local_adnl_addr: String,
     #[serde(default = "default_lookup_timeout_secs")]
     lookup_timeout_secs: u64,
     #[serde(default = "default_workers")]
@@ -256,6 +258,7 @@ struct ResolverMetadata {
     kind: String,
     attempted_network_resolution: bool,
     global_config_path: String,
+    local_adnl_addr: String,
     bootstrap_nodes: usize,
     lookup_policy: String,
 }
@@ -338,11 +341,20 @@ struct ConfigAddress {
     port: Option<u16>,
 }
 
-struct EverDhtResolver {
+struct AdnlDhtResolver {
     _adnl: Arc<AdnlNode>,
     dht: Arc<DhtNode>,
     preset_nodes: Vec<Arc<KeyId>>,
+    local_adnl_addr: String,
     lookup_timeout: Duration,
+}
+
+#[derive(Default)]
+struct NetworkWarmupStats {
+    checked: usize,
+    responsive: usize,
+    errors: usize,
+    known_nodes: usize,
 }
 
 #[tokio::main]
@@ -358,8 +370,9 @@ async fn run(args: RunArgs) -> Result<()> {
     let config = load_config(&args.config)?;
     let base_dir = config_base_dir(&args.config);
     let config = config.resolve_paths(&base_dir);
-    let resolver = EverDhtResolver::new(
+    let resolver = AdnlDhtResolver::new(
         &config.resolver.global_config_path,
+        &config.resolver.local_adnl_addr,
         Duration::from_secs(config.resolver.lookup_timeout_secs),
     )
     .await?;
@@ -380,10 +393,14 @@ async fn run(args: RunArgs) -> Result<()> {
     }
 }
 
-async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<()> {
+async fn collect_once(config: &AppConfig, resolver: &AdnlDhtResolver) -> Result<()> {
     let now = unix_now();
-    let source_url = format!("{}/api/chains/{CHAIN_ID}/clock", config.base_url);
-    eprintln!("collect start chain={CHAIN_ID} resolver=ever-dht");
+    let source_url = format!("{}/api/chains/{}/clock", config.base_url, config.chain);
+    eprintln!(
+        "collect start chain={} resolver={}",
+        config.chain,
+        resolver_kind(&config.chain)
+    );
 
     let clock = reqwest::get(&source_url)
         .await
@@ -394,12 +411,28 @@ async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<
         .await
         .with_context(|| format!("failed to decode validators clock response from {source_url}"))?;
 
-    if clock.chain.id != CHAIN_ID {
-        bail!("expected chain id {CHAIN_ID}, got {}", clock.chain.id);
+    if clock.chain.id != config.chain {
+        bail!("expected chain id {}, got {}", config.chain, clock.chain.id);
     }
 
+    let warmup = resolver.warmup_network().await;
+    eprintln!(
+        "resolver warmup checked={} responsive={} errors={} known_nodes={}",
+        warmup.checked, warmup.responsive, warmup.errors, warmup.known_nodes
+    );
+
     let workers = config.resolver.workers.max(1);
-    let mut validators = stream::iter(clock.current_set.validators.iter().enumerate())
+    let total_to_resolve = clock.current_set.validators.len();
+    eprintln!(
+        "resolve start validators={} workers={} timeout={}s",
+        total_to_resolve, workers, config.resolver.lookup_timeout_secs
+    );
+    let mut done = 0usize;
+    let mut resolved_progress = 0usize;
+    let mut missing_progress = 0usize;
+    let mut invalid_progress = 0usize;
+    let mut failed_progress = 0usize;
+    let mut pending = stream::iter(clock.current_set.validators.iter().enumerate())
         .map(|(index, validator)| async move {
             let resolution = match validator.adnl_addr.as_deref() {
                 Some(adnl_addr) => {
@@ -433,9 +466,23 @@ async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<
                 },
             )
         })
-        .buffer_unordered(workers)
-        .collect::<Vec<_>>()
-        .await;
+        .buffer_unordered(workers);
+    let mut validators = Vec::with_capacity(total_to_resolve);
+    while let Some((index, validator)) = pending.next().await {
+        done += 1;
+        match validator.resolution.status.as_str() {
+            "resolved" => resolved_progress += 1,
+            "missing_adnl" => missing_progress += 1,
+            "invalid_adnl" => invalid_progress += 1,
+            _ => failed_progress += 1,
+        }
+        if done == total_to_resolve || done % 25 == 0 {
+            eprintln!(
+                "resolve progress {done}/{total_to_resolve} resolved={resolved_progress} missing={missing_progress} invalid={invalid_progress} failed={failed_progress}"
+            );
+        }
+        validators.push((index, validator));
+    }
     validators.sort_by_key(|(index, _)| *index);
     let validators: Vec<FullValidator> = validators
         .into_iter()
@@ -472,9 +519,10 @@ async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<
         resolved_total,
         map_nodes: map_nodes.len(),
         resolver: ResolverMetadata {
-            kind: "ever-dht".to_owned(),
+            kind: resolver_kind(&config.chain).to_owned(),
             attempted_network_resolution: true,
             global_config_path: config.resolver.global_config_path.display().to_string(),
+            local_adnl_addr: resolver.local_adnl_addr.clone(),
             bootstrap_nodes: resolver.bootstrap_nodes(),
             lookup_policy: "all-bootstrap-peers-full-search".to_owned(),
         },
@@ -521,13 +569,17 @@ impl AppConfig {
     }
 }
 
-impl EverDhtResolver {
-    async fn new(global_config_path: &Path, lookup_timeout: Duration) -> Result<Self> {
+impl AdnlDhtResolver {
+    async fn new(
+        global_config_path: &Path,
+        local_adnl_addr: &str,
+        lookup_timeout: Duration,
+    ) -> Result<Self> {
         let config = read_global_config(global_config_path)?;
         let dht_nodes = config.get_dht_nodes_configs()?;
 
         let (_, adnl_config) = AdnlNodeConfig::with_ip_address_and_private_key_tags(
-            LOCAL_ADNL_ADDR,
+            local_adnl_addr,
             vec![DHT_KEY_TAG],
         )
         .context("failed to create local ADNL config")?;
@@ -558,6 +610,7 @@ impl EverDhtResolver {
             _adnl: adnl,
             dht,
             preset_nodes,
+            local_adnl_addr: local_adnl_addr.to_owned(),
             lookup_timeout,
         })
     }
@@ -573,6 +626,27 @@ impl EverDhtResolver {
         }
     }
 
+    async fn warmup_network(&self) -> NetworkWarmupStats {
+        let mut stats = NetworkWarmupStats {
+            checked: self.preset_nodes.len(),
+            ..NetworkWarmupStats::default()
+        };
+
+        for node_key in &self.preset_nodes {
+            match self.dht.find_dht_nodes_in_network(node_key, None).await {
+                Ok(true) => stats.responsive += 1,
+                Ok(false) | Err(_) => stats.errors += 1,
+            }
+        }
+
+        stats.known_nodes = self
+            .dht
+            .get_known_nodes_of_network(10000, None)
+            .map(|nodes| nodes.len())
+            .unwrap_or_default();
+        stats
+    }
+
     async fn resolve_inner(&self, adnl_addr: &str) -> Result<ResolvedAddress> {
         let adnl_key = hex::decode(adnl_addr).context("invalid adnl hex")?;
         let key_id = KeyId::from_data(
@@ -585,6 +659,10 @@ impl EverDhtResolver {
         let mut context = None;
         let mut responsive_bootstrap = 0usize;
         let mut bootstrap_errors = Vec::new();
+
+        if let Some(address) = self.find_address(&key_id, &mut context).await? {
+            return Ok(address);
+        }
 
         for (index, node_key) in self.preset_nodes.iter().enumerate() {
             match self.dht.find_dht_nodes_in_network(node_key, None).await {
@@ -952,6 +1030,22 @@ fn unix_now() -> u64 {
 
 fn default_base_url() -> String {
     "https://validatorsclock.xyz".to_owned()
+}
+
+fn default_chain() -> String {
+    "everscale".to_owned()
+}
+
+fn default_local_adnl_addr() -> String {
+    "0.0.0.0:4191".to_owned()
+}
+
+fn resolver_kind(chain: &str) -> &'static str {
+    match chain {
+        "everscale" => "ever-dht",
+        "ton" => "ton-dht",
+        _ => "adnl-dht",
+    }
 }
 
 fn default_interval_secs() -> u64 {

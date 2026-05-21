@@ -1,3 +1,5 @@
 /target
 /out
 /everscale_address_resolver.json
+/ton_address_resolver.json
+/ton-global.config.json

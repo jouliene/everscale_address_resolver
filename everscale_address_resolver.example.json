@@ -1,5 +1,6 @@
 {
   "base_url": "https://validatorsclock.xyz",
+  "chain": "everscale",
   "interval_secs": 300,
   "full_geo_refresh_secs": 3600,
   "state": "out/runtime/everscale_nodes_state.json",
@@ -10,6 +11,7 @@
   "compact": true,
   "resolver": {
     "global_config_path": "/home/admin/everscale_dht_bootstrap/everscale-bootstrap-global-config.json",
+    "local_adnl_addr": "0.0.0.0:4191",
     "lookup_timeout_secs": 30,
     "workers": 16
   },

@@ -1,0 +1,23 @@
+{
+  "base_url": "https://validatorsclock.xyz",
+  "chain": "ton",
+  "interval_secs": 300,
+  "full_geo_refresh_secs": 3600,
+  "state": "out/runtime/ton_nodes_state.json",
+  "output": "out/ton_map/ton_full.json",
+  "map_output": "out/ton_map/ton_nodes.json",
+  "map_cache": "out/runtime/ton_map_cache.json",
+  "map_stale_after_secs": 3600,
+  "compact": true,
+  "resolver": {
+    "global_config_path": "ton-global.config.json",
+    "local_adnl_addr": "0.0.0.0:4194",
+    "lookup_timeout_secs": 30,
+    "workers": 16
+  },
+  "geo": {
+    "endpoint": "http://ip-api.com/batch?fields=status,message,country,countryCode,regionName,city,lat,lon,isp,org,as,query",
+    "batch_size": 100,
+    "cache": "out/runtime/ton_geo_cache.json"
+  }
+}
