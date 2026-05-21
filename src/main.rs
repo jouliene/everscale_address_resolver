@@ -8,7 +8,7 @@ use std::{
 };
 
 use adnl::{
-    DhtNode, DhtSearchPolicy,
+    AddressSearchContext, DhtNode, DhtSearchPolicy,
     node::{AdnlNode, AdnlNodeConfig},
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -256,6 +256,8 @@ struct ResolverMetadata {
     kind: String,
     attempted_network_resolution: bool,
     global_config_path: String,
+    bootstrap_nodes: usize,
+    lookup_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -473,6 +475,8 @@ async fn collect_once(config: &AppConfig, resolver: &EverDhtResolver) -> Result<
             kind: "ever-dht".to_owned(),
             attempted_network_resolution: true,
             global_config_path: config.resolver.global_config_path.display().to_string(),
+            bootstrap_nodes: resolver.bootstrap_nodes(),
+            lookup_policy: "all-bootstrap-peers-full-search".to_owned(),
         },
         validators,
     };
@@ -579,55 +583,83 @@ impl EverDhtResolver {
         );
 
         let mut context = None;
-        let mut nodes = self.preset_nodes.clone();
-        let mut bad_nodes = Vec::<Arc<KeyId>>::new();
-        let mut index = 0usize;
+        let mut responsive_bootstrap = 0usize;
+        let mut bootstrap_errors = Vec::new();
 
-        loop {
-            if let Ok(Some((ip, _key))) = DhtNode::find_address_in_network_with_context(
-                &self.dht,
-                &key_id,
-                &mut context,
-                DhtSearchPolicy::FastSearch(5),
-                None,
-            )
-            .await
+        for (index, node_key) in self.preset_nodes.iter().enumerate() {
+            match self.dht.find_dht_nodes_in_network(node_key, None).await {
+                Ok(true) => responsive_bootstrap += 1,
+                Ok(false) => {
+                    bootstrap_errors.push(format!("bootstrap #{} did not respond", index + 1))
+                }
+                Err(error) => bootstrap_errors.push(format!("bootstrap #{}: {error}", index + 1)),
+            }
+
+            if let Some(address) = self.find_address(&key_id, &mut context).await? {
+                return Ok(address);
+            }
+        }
+
+        let mut known_nodes = Vec::new();
+        let mut known_node_ids = BTreeSet::new();
+        for node in self
+            .dht
+            .get_known_nodes_of_network(10000, None)
+            .context("failed to read known DHT nodes")?
+        {
+            if let Some(key) = self
+                .dht
+                .add_peer_to_network(&node, None)
+                .context("failed to add known DHT node")?
             {
-                return endpoint_from_display(&ip.to_string());
-            }
-
-            if index >= nodes.len() {
-                nodes.clear();
-                for node in self
-                    .dht
-                    .get_known_nodes_of_network(10000, None)
-                    .context("failed to read known DHT nodes")?
-                {
-                    if let Some(key) = self
-                        .dht
-                        .add_peer_to_network(&node, None)
-                        .context("failed to add known DHT node")?
-                    {
-                        if !bad_nodes.contains(&key) {
-                            nodes.push(key);
-                        }
-                    }
-                }
-
-                if nodes.is_empty() {
-                    bail!("no responsive DHT peers");
-                }
-                index = 0;
-            }
-
-            let node_key = nodes[index].clone();
-            match self.dht.find_dht_nodes_in_network(&node_key, None).await {
-                Ok(true) => index += 1,
-                Ok(false) | Err(_) => {
-                    bad_nodes.push(nodes.remove(index));
+                if known_node_ids.insert(key.to_string()) {
+                    known_nodes.push(key);
                 }
             }
         }
+
+        for node_key in known_nodes {
+            let _ = self.dht.find_dht_nodes_in_network(&node_key, None).await;
+            if let Some(address) = self.find_address(&key_id, &mut context).await? {
+                return Ok(address);
+            }
+        }
+
+        let details = if bootstrap_errors.is_empty() {
+            String::new()
+        } else {
+            format!("; {}", bootstrap_errors.join("; "))
+        };
+        bail!(
+            "address not found after checking {} bootstrap DHT peers ({} responsive){}",
+            self.preset_nodes.len(),
+            responsive_bootstrap,
+            details
+        )
+    }
+
+    async fn find_address(
+        &self,
+        key_id: &Arc<KeyId>,
+        context: &mut Option<AddressSearchContext>,
+    ) -> Result<Option<ResolvedAddress>> {
+        if let Some((ip, _key)) = DhtNode::find_address_in_network_with_context(
+            &self.dht,
+            key_id,
+            context,
+            DhtSearchPolicy::FullSearch(5),
+            None,
+        )
+        .await?
+        {
+            return endpoint_from_display(&ip.to_string()).map(Some);
+        }
+
+        Ok(None)
+    }
+
+    fn bootstrap_nodes(&self) -> usize {
+        self.preset_nodes.len()
     }
 }
 

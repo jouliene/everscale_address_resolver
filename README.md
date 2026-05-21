@@ -44,6 +44,13 @@ Recommended production paths:
 /home/admin/.validators_clock/everscale_map/everscale_full.json
 ```
 
+`everscale_full.json` includes resolver metadata with the loaded bootstrap node
+count. A missing ADNL IP is reported only after the resolver has swept all
+bootstrap DHT peers from the configured global config and still failed to find
+an address. `map_stale_after_secs` keeps a previously resolved map node for the
+configured grace period, so the default production setting waits 3600 seconds
+before the validator disappears from the map output.
+
 ## Install And Update
 
 Install after clone:
