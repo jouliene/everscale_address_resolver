@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "everscale_address_resolver"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "adnl",
  "anyhow",

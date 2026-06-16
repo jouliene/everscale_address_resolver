@@ -1,10 +1,10 @@
 # everscale_address_resolver
 
-ADNL/DHT validator map collector for `validators_clock`.
+ADNL/DHT validator map collector for `validatorclock`.
 
-The resolver reads the current validator set from `validators_clock`, resolves
+The resolver reads the current validator set from `validatorclock`, resolves
 validator ADNL addresses through native Rust ADNL/DHT, enriches IPs through
-`ip-api.com`, and writes map JSON in the format consumed by `validators_clock`.
+`ip-api.com`, and writes map JSON in the format consumed by `validatorclock`.
 It was built for Everscale first, but the same resolver can be tested against
 TON with the official TON global config.
 
@@ -64,8 +64,8 @@ The collector expects this file by default:
 Recommended production paths:
 
 ```text
-/home/admin/.validators_clock/everscale_map/everscale_nodes.json
-/home/admin/.validators_clock/everscale_map/everscale_full.json
+/home/admin/.validatorclock/everscale_map/everscale_nodes.json
+/home/admin/.validatorclock/everscale_map/everscale_full.json
 ```
 
 `everscale_full.json` includes resolver metadata with the loaded bootstrap node

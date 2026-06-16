@@ -1,5 +1,5 @@
 {
-  "base_url": "https://validatorsclock.xyz",
+  "base_url": "https://validatorclock.xyz",
   "chain": "ton",
   "interval_secs": 300,
   "full_geo_refresh_secs": 3600,

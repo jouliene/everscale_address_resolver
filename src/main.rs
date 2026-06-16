@@ -1029,7 +1029,7 @@ fn unix_now() -> u64 {
 }
 
 fn default_base_url() -> String {
-    "https://validatorsclock.xyz".to_owned()
+    "https://validatorclock.xyz".to_owned()
 }
 
 fn default_chain() -> String {
